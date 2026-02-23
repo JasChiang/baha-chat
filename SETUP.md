@@ -46,8 +46,9 @@
 
 ✅ **安全做法**：
 - `.env` 檔案已加入 `.gitignore`，不會被 git 追蹤
-- 帳密僅存在本機，不會上傳到任何地方
-- MCP server 在本機執行，不會將帳密傳送到外部服務
+- 帳密主要儲存在本機 `.env`
+- MCP server 在本機執行，不會額外上傳到第三方服務
+- 登入時帳密會傳送到巴哈姆特 BBS 伺服器（登入必要行為）
 
 ⚠️ **注意事項**：
 - 不要將 `.env` 檔案分享給他人
@@ -98,12 +99,12 @@ BBS credentials not found. Please create a .env file with BBS_USERNAME and BBS_P
 
 ### 手動登入（不使用 .env）
 
-如果你不想使用 .env 檔案，也可以手動登入：
+如果你不想使用 .env 檔案，也可以手動登入（不建議，風險較高）：
 
 1. 使用 `bbs_connect` 連接
 2. 使用 `bbs_send` 輸入帳號
 3. 使用 `bbs_send_key` 按 Enter
-4. 使用 `bbs_send` 輸入密碼
+4. 使用 `bbs_send` 輸入密碼（雖然目前輸入回顯會隱藏，仍不建議）
 5. 使用 `bbs_send_key` 按 Enter
 
-但每次都要重複這些步驟，比較不方便。
+建議優先使用 `bbs_auto_login`，避免在對話流程中手動輸入密碼。
