@@ -713,22 +713,11 @@ class BahaBBSServer {
       ? this.getScreenSummary(screenContent)
       : screenContent;
 
-    const sensitivePatterns = [
-      /密碼/i,
-      /password/i,
-      /passwd/i,
-      /token/i,
-      /secret/i,
-      /api[-_ ]?key/i,
-    ];
-    const shouldMaskInput = sensitivePatterns.some((pattern) => pattern.test(text));
-    const echoedText = shouldMaskInput ? "[REDACTED]" : text;
-
     return {
       content: [
         {
           type: "text",
-          text: `Sent: ${echoedText}\n\n${returnMode === "summary" ? "Summary" : "Response"}:\n${response}`,
+          text: `Sent input: [HIDDEN]\n\n${returnMode === "summary" ? "Summary" : "Response"}:\n${response}`,
         } as TextContent,
       ],
     };
