@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "baha-bbs": {
+      "command": "node",
+      "args": ["/path/to/baha-chat/dist/index.js"]
+    }
+  }
+}
