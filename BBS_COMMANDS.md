@@ -91,6 +91,26 @@
 5. 使用 bbs_send_ctrl 工具，letter: "X"  # 離開
 ```
 
+### 回覆文章
+
+```
+1. 閱讀文章後，使用 bbs_send 工具，text: "y"  # 按 y 回應
+2. 使用 bbs_send 工具，text: "F"  # 回應至看板（或 M 回應至信箱）
+3. 使用 bbs_send_key 工具，key: "enter"  # 跳過類別選單（重要！不要選類別）
+4. 使用 bbs_send 工具，text: "標題"  # 輸入標題（通常是 "Re: 原標題"）
+5. 使用 bbs_send_key 工具，key: "enter"
+6. 使用 bbs_send 工具，text: "Y"  # 是否引用原文（Y/N）
+7. 使用 bbs_send_key 工具，key: "enter"
+8. 使用 bbs_send 工具，text: "0"  # 選擇簽名檔（0=不加）
+9. 使用 bbs_send_key 工具，key: "enter"
+10. 輸入回覆內容
+11. 使用 bbs_send_ctrl 工具，letter: "W"  # 儲存
+12. 使用 bbs_send 工具，text: "S"  # 存檔
+13. 使用 bbs_send_key 工具，key: "enter"
+```
+
+**重要提醒**：回覆文章時，出現類別選單要直接按 Enter 跳過，不要選擇類別（a/b/c/d 等），否則會在標題加上類別前綴。
+
 ### 跳到特定文章編號
 
 ```
