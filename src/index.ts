@@ -10,11 +10,11 @@ import {
   TextContent,
 } from "@modelcontextprotocol/sdk/types.js";
 import WebSocket from "ws";
-import iconv from "iconv-lite";
 import dotenv from "dotenv";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import xtermPkg from "@xterm/headless";
+import { decodeBig5UAO, encodeBig5UAO } from "./uaoCodec.js";
 const { Terminal } = xtermPkg;
 
 // Load environment variables
@@ -31,6 +31,8 @@ interface BBSConnection {
 }
 
 class BahaBBSServer {
+  private readonly terminalCols = 80;
+  private readonly terminalRows = 24;
   private server: Server;
   private connection: BBSConnection = {
     ws: null,
@@ -182,6 +184,14 @@ class BahaBBSServer {
             properties: {},
           },
         },
+        {
+          name: "bbs_reset_screen",
+          description: "Reset local terminal screen buffer to match a fresh 80x24 BBS viewport",
+          inputSchema: {
+            type: "object",
+            properties: {},
+          },
+        },
       ];
 
       return { tools };
@@ -228,6 +238,9 @@ class BahaBBSServer {
           case "bbs_disconnect":
             return await this.handleDisconnect();
 
+          case "bbs_reset_screen":
+            return await this.handleResetScreen();
+
           default:
             throw new Error(`Unknown tool: ${name}`);
         }
@@ -252,15 +265,34 @@ class BahaBBSServer {
 
     const buffer = this.connection.terminal.buffer.active;
     const lines: string[] = [];
-
-    for (let i = 0; i < buffer.length; i++) {
+    const viewportY = buffer.viewportY ?? Math.max(0, buffer.length - this.terminalRows);
+    const end = viewportY + this.terminalRows;
+    for (let i = viewportY; i < end; i++) {
       const line = buffer.getLine(i);
       if (line) {
         lines.push(line.translateToString(true)); // true = remove trailing whitespace
+      } else {
+        lines.push("");
       }
     }
 
     return lines.join('\n');
+  }
+
+  private resetLocalTerminal() {
+    if (this.connection.terminal) {
+      this.connection.terminal.dispose();
+    }
+
+    // Keep a no-scrollback terminal so MCP sees exactly what a user sees on a standard 80x24 BBS viewport.
+    this.connection.terminal = new Terminal({
+      cols: this.terminalCols,
+      rows: this.terminalRows,
+      scrollback: 0,
+      allowProposedApi: true
+    });
+    this.connection.lastScreenContent = "";
+    this.connection.buffer = Buffer.alloc(0);
   }
 
   private detectScreenState(content: string): string {
@@ -276,6 +308,9 @@ class BahaBBSServer {
     if (content.includes("順利貼出佈告")) return "post_success";
     if (content.includes("請按任意鍵繼續")) return "press_any_key";
     if (content.includes("本板用途僅供")) return "board_enter";
+    // Article view: has author/title/time metadata and navigation hints
+    if ((content.includes("作者:") || content.includes("標題:") || content.includes("時間:")) &&
+        (content.includes("瀏覽") || content.includes("文章選讀"))) return "article_view";
     return "unknown";
   }
 
@@ -398,6 +433,64 @@ class BahaBBSServer {
     };
   }
 
+  private parseArticleView(content: string): any {
+    const lines = content.split('\n');
+    let metadata = { author: "", title: "", time: "", board: "" };
+    let contentStart = -1;
+    let hasSignature = false;
+    let hasQuote = false;
+
+    // Parse metadata (first few lines)
+    for (let i = 0; i < Math.min(10, lines.length); i++) {
+      const line = lines[i];
+
+      if (line.includes("作者:")) {
+        const match = line.match(/作者:\s*(\S+).*看板:\s*(\S+)/);
+        if (match) {
+          metadata.author = match[1];
+          metadata.board = match[2];
+        }
+      }
+      if (line.includes("標題:")) {
+        const match = line.match(/標題:\s*(.+)/);
+        if (match) metadata.title = match[1].trim();
+      }
+      if (line.includes("時間:")) {
+        const match = line.match(/時間:\s*(.+)/);
+        if (match) metadata.time = match[1].trim();
+        contentStart = i + 1; // Content starts after time line
+        break;
+      }
+    }
+
+    // Detect signature and quote
+    hasSignature = content.includes("--\n") || content.includes("-- \n");
+    hasQuote = content.includes("※ 引述《") || content.includes("> ");
+
+    // Get progress indicator
+    const progressMatch = content.match(/瀏覽\s+P\.(\d+)\((\d+)%\)/);
+    const progress = progressMatch ? {
+      page: parseInt(progressMatch[1]),
+      percent: parseInt(progressMatch[2])
+    } : null;
+
+    return {
+      state: "article_view",
+      mode: content.includes("編輯文章") ? "editor" : "viewing",
+      metadata,
+      structure: {
+        has_signature: hasSignature,
+        has_quote: hasQuote,
+        content_start_line: contentStart
+      },
+      progress,
+      format_check: {
+        metadata_complete: !!(metadata.author && metadata.title && metadata.time),
+        metadata_position: contentStart > 0 ? "correct (lines 1-3)" : "missing or malformed"
+      }
+    };
+  }
+
   private parseMainMenu(content: string): any {
     const lines = content.split('\n');
     const menuOptions = [];
@@ -444,6 +537,9 @@ class BahaBBSServer {
     switch (state) {
       case "board_list":
         return this.parseArticleList(content);
+
+      case "article_view":
+        return this.parseArticleView(content);
 
       case "main_menu":
         return this.parseMainMenu(content);
@@ -633,11 +729,7 @@ class BahaBBSServer {
           this.connection.connected = true;
 
           // Initialize terminal emulator
-          this.connection.terminal = new Terminal({
-            cols: 80,
-            rows: 24,
-            allowProposedApi: true
-          });
+          this.resetLocalTerminal();
 
           resolve({
             content: [
@@ -650,23 +742,14 @@ class BahaBBSServer {
         });
 
         this.connection.ws.on("message", (data: Buffer) => {
-          // Accumulate buffer to handle incomplete Big5 sequences
+          // Accumulate buffer to handle incomplete Big5-UAO sequences.
           this.connection.buffer = Buffer.concat([this.connection.buffer, data]);
 
-          try {
-            // Big5 decode to UTF-8
-            const utf8String = iconv.decode(this.connection.buffer, "big5");
-
-            // Feed to terminal emulator
-            if (this.connection.terminal) {
-              this.connection.terminal.write(utf8String);
-            }
-
-            // Successfully decoded, clear buffer
-            this.connection.buffer = Buffer.alloc(0);
-          } catch (e) {
-            // Possibly incomplete Big5 sequence, keep buffer for next message
+          const { text, remaining } = decodeBig5UAO(this.connection.buffer);
+          if (this.connection.terminal && text.length > 0) {
+            this.connection.terminal.write(text);
           }
+          this.connection.buffer = remaining;
         });
 
         this.connection.ws.on("error", (error) => {
@@ -701,8 +784,8 @@ class BahaBBSServer {
       throw new Error("Not connected to BBS. Use bbs_connect first.");
     }
 
-    // Encode text as Big5 and send
-    const encoded = iconv.encode(text, "big5");
+    // Encode text as Big5-UAO and send.
+    const encoded = encodeBig5UAO(text);
     this.connection.ws.send(encoded);
 
     // Wait for screen update
@@ -824,9 +907,37 @@ class BahaBBSServer {
     }
 
     const screenContent = this.getScreenContent();
-    const response = returnMode === "summary"
-      ? this.getScreenSummary(screenContent)
-      : screenContent;
+    const state = this.detectScreenState(screenContent);
+
+    let response: string;
+
+    if (returnMode === "summary") {
+      response = this.getScreenSummary(screenContent);
+    } else {
+      // Full mode: add structured info for article view
+      if (state === "article_view" || state === "editor") {
+        const context = this.parseArticleView(screenContent);
+        response = `=== SCREEN MODE: ${context.mode.toUpperCase()} ===\n\n`;
+
+        if (context.metadata.author || context.metadata.title || context.metadata.time) {
+          response += `=== METADATA ===\n`;
+          if (context.metadata.author) response += `作者: ${context.metadata.author}\n`;
+          if (context.metadata.board) response += `看板: ${context.metadata.board}\n`;
+          if (context.metadata.title) response += `標題: ${context.metadata.title}\n`;
+          if (context.metadata.time) response += `時間: ${context.metadata.time}\n`;
+          response += `\n`;
+        }
+
+        response += `=== CONTENT ===\n${screenContent}\n\n`;
+        response += `=== FORMAT CHECK ===\n`;
+        response += `Metadata: ${context.format_check.metadata_complete ? '✓ Complete' : '✗ Incomplete'}\n`;
+        response += `Position: ${context.format_check.metadata_position}\n`;
+        response += `Signature: ${context.structure.has_signature ? '✓ Found' : '✗ Not found'}\n`;
+        response += `Quote: ${context.structure.has_quote ? '✓ Found' : '✗ Not found'}\n`;
+      } else {
+        response = screenContent;
+      }
+    }
 
     return {
       content: [
@@ -888,6 +999,22 @@ class BahaBBSServer {
     };
   }
 
+  private async handleResetScreen(): Promise<CallToolResult> {
+    if (!this.connection.connected || !this.connection.ws) {
+      throw new Error("Not connected to BBS. Use bbs_connect first.");
+    }
+
+    this.resetLocalTerminal();
+    return {
+      content: [
+        {
+          type: "text",
+          text: "Local terminal screen reset. Send one key (e.g., enter/space) to refresh from BBS.",
+        } as TextContent,
+      ],
+    };
+  }
+
   private async handleAutoLogin(returnMode: string = "summary"): Promise<CallToolResult> {
     const username = process.env.BBS_USERNAME;
     const password = process.env.BBS_PASSWORD;
@@ -909,13 +1036,13 @@ class BahaBBSServer {
     steps.push("Waited for welcome screen");
 
     // Send username
-    const encodedUsername = iconv.encode(username + "\r", "big5");
+    const encodedUsername = encodeBig5UAO(username + "\r");
     this.connection.ws?.send(encodedUsername);
     await new Promise(resolve => setTimeout(resolve, 2000));
     steps.push("Sent username");
 
     // Send password (wait longer for BBS to be ready)
-    const encodedPassword = iconv.encode(password + "\r", "big5");
+    const encodedPassword = encodeBig5UAO(password + "\r");
     this.connection.ws?.send(encodedPassword);
     await new Promise(resolve => setTimeout(resolve, 2000));
     steps.push("Sent password");
