@@ -1,14 +1,18 @@
 # Bahamut BBS MCP Server
 
-這是一個 Model Context Protocol (MCP) server，用於連接到巴哈姆特 BBS (bbs.gamer.com.tw)。
+用來操作巴哈姆特 BBS 的 MCP server。
+
+這個專案透過 WebSocket 連到 `wss://term.gamer.com.tw/bbs`，在本地模擬 80x24 的 BBS 終端畫面，提供可供 MCP client 呼叫的工具，例如登入、送出文字、送特殊按鍵、讀取畫面、解析列表與文章內容。
 
 ## 功能
 
-- 透過 WebSocket 連接到巴哈姆特 BBS
-- 發送文字指令到 BBS
-- 發送特殊按鍵（方向鍵、Enter 等）
-- 讀取 BBS 畫面內容
-- 支援 Big5 編碼
+- 連接巴哈姆特 BBS
+- 使用帳密自動登入
+- 發送文字、方向鍵、Enter、PageUp/PageDown、Ctrl 組合鍵
+- 讀取目前可視畫面
+- 輸出結構化 context，方便代理做導覽與判斷
+- 支援 Big5-UAO 編碼處理
+- 可重置本地終端畫面，避免 scrollback 或殘留畫面干擾
 
 ## 安裝
 
@@ -17,34 +21,30 @@ npm install
 npm run build
 ```
 
-## 設定帳號密碼
+## 設定
 
-請參考 [SETUP.md](SETUP.md) 詳細說明。
+詳細步驟可參考 [SETUP.md](SETUP.md)。
 
-**快速設定**：
+### 1. 建立設定檔
 
 ```bash
-# 1. 複製範例檔案
 cp .env.example .env
 cp .mcp.json.example .mcp.json
-
-# 2. 編輯 .env 並填入你的帳號密碼
-nano .env  # 或使用你喜歡的編輯器
-
-# 3. 編輯 .mcp.json 並修改為你的實際專案路徑
-nano .mcp.json  # 或使用你喜歡的編輯器
-
-# 4. 重新建置
-npm run build
 ```
 
-然後在 `.env` 檔案中填入：
-```
+### 2. 填入 BBS 帳號密碼
+
+在 `.env` 內設定：
+
+```env
 BBS_USERNAME=你的帳號
 BBS_PASSWORD=你的密碼
 ```
 
-在 `.mcp.json` 檔案中修改路徑：
+### 3. 設定 MCP server 路徑
+
+把 `.mcp.json` 內的路徑改成你本機的實際位置：
+
 ```json
 {
   "mcpServers": {
@@ -56,126 +56,138 @@ BBS_PASSWORD=你的密碼
 }
 ```
 
-## 使用方式
+如果你是接到 Claude Desktop，也可以把同樣的設定寫進：
 
-### 在 Claude Desktop 中設定
+`~/Library/Application Support/Claude/claude_desktop_config.json`
 
-1. **複製 MCP 設定範例**：
-   ```bash
-   cp .mcp.json.example .mcp.json
-   ```
+## 可用工具
 
-2. **修改 .mcp.json 中的路徑**為你的實際專案路徑：
-   ```json
-   {
-     "mcpServers": {
-       "baha-bbs": {
-         "command": "node",
-         "args": ["/實際路徑/baha-chat/dist/index.js"]
-       }
-     }
-   }
-   ```
+### `bbs_connect`
 
-3. **編輯 Claude Desktop 的設定檔**（`~/Library/Application Support/Claude/claude_desktop_config.json`），加入 .mcp.json 的內容或使用絕對路徑：
+建立到巴哈姆特 BBS 的 WebSocket 連線。
 
-   ```json
-   {
-     "mcpServers": {
-       "baha-bbs": {
-         "command": "node",
-         "args": ["/你的路徑/baha-chat/dist/index.js"]
-       }
-     }
-   }
-   ```
+### `bbs_auto_login`
 
-### 可用工具
+使用 `.env` 裡的 `BBS_USERNAME` / `BBS_PASSWORD` 自動登入。
 
-1. **bbs_connect** - 連接到 BBS
-2. **bbs_auto_login** - 使用 .env 設定的帳密自動登入 ⭐
-3. **bbs_send** - 發送文字到 BBS
-4. **bbs_send_key** - 發送特殊按鍵 ⭐ 新增
-   - 方向鍵：up, down, left, right
-   - 換頁：pgup, pgdn, pageup, pagedown
-   - 導航：home, end
-   - 其他：enter, esc, space, backspace, delete, insert
-5. **bbs_send_ctrl** - 發送 Ctrl 組合鍵 🆕
-   - 例如：Ctrl+P 發文、Ctrl+W 儲存、Ctrl+X 離開
-6. **bbs_get_screen** - 取得目前畫面內容
-7. **bbs_get_context** - 取得結構化畫面資料（推薦，較省 token）
-8. **bbs_disconnect** - 中斷連線
+### `bbs_send`
 
-### 使用範例
+傳送一般文字或指令到 BBS。
 
-#### 快速登入（推薦）
+### `bbs_send_key`
 
-1. 連接並自動登入：
-   ```
-   請使用 bbs_connect 工具連接
-   請使用 bbs_auto_login 工具自動登入
-   ```
+傳送特殊按鍵。
 
-2. 查看登入後畫面：
-   ```
-   請使用 bbs_get_screen 工具
-   ```
+支援：
 
-#### 手動登入
+- `up`
+- `down`
+- `left`
+- `right`
+- `pgup` / `pageup`
+- `pgdn` / `pagedown`
+- `home`
+- `end`
+- `enter`
+- `esc`
+- `space`
+- `backspace`
+- `delete`
+- `insert`
 
-1. 首先連接到 BBS：
-   ```
-   使用 bbs_connect 工具
-   ```
+### `bbs_send_ctrl`
 
-2. 發送文字（例如登入帳號）：
-   ```
-   使用 bbs_send 工具，text: "your_username"
-   ```
+傳送 `Ctrl+<letter>` 組合鍵，例如：
 
-3. 按下 Enter：
-   ```
-   使用 bbs_send_key 工具，key: "enter"
-   ```
+- `Ctrl+P` 發文
+- `Ctrl+W` 存檔
+- `Ctrl+X` 離開
 
-4. 查看目前畫面：
-   ```
-   使用 bbs_get_screen 工具
-   ```
+### `bbs_get_screen`
+
+取得目前畫面內容。
+
+`return_mode: "summary"` 時回傳較精簡內容；`"full"` 時可取得完整可視畫面。文章畫面會額外附上 metadata 與格式檢查資訊。
+
+### `bbs_get_context`
+
+回傳結構化畫面資料，適合用來判斷目前狀態、列表內容、文章資訊與導覽流程。通常比 `bbs_get_screen` 更省 token。
+
+### `bbs_reset_screen`
+
+重置本地終端緩衝，回到乾淨的 80x24 畫面狀態。當畫面漂移、scrollback 汙染或解析狀態不準時可用。
+
+### `bbs_disconnect`
+
+中斷連線。
+
+## 畫面與解析行為
+
+- `bbs_get_screen` / `bbs_get_context` 以「目前可視的 80x24 視窗」為準，不是完整 scrollback。
+- 本地終端使用無 scrollback 模式，盡量貼近一般 BBS 客戶端看到的畫面。
+- 文章畫面會嘗試解析：
+  - 作者
+  - 看板
+  - 標題
+  - 時間
+  - 是否包含簽名
+  - 是否包含引言
+  - 目前瀏覽頁數與百分比
+
+## 使用範例
+
+### 快速登入
+
+```text
+1. 呼叫 bbs_connect
+2. 呼叫 bbs_auto_login
+3. 呼叫 bbs_get_context 或 bbs_get_screen
+```
+
+### 手動輸入帳號
+
+```text
+1. 呼叫 bbs_connect
+2. 呼叫 bbs_send，text: "your_username"
+3. 呼叫 bbs_send_key，key: "enter"
+4. 視需求繼續輸入密碼
+```
+
+## 編碼說明
+
+巴哈姆特 BBS 使用 Big5 家族編碼，但實際內容常混用 UAO 擴充字元，用來補足傳統 Big5 / CP950 對部分日文、特殊符號與站內常見擴充字元的支援。
+
+這個專案目前不是單純用一般 Big5 轉換，而是加入 Big5-UAO encode/decode 邏輯，降低文字在收送過程中出現錯字、缺字或對應錯誤的機率。
+
+`src/generated/uao-encode.json` 與 `src/generated/uao-decode.json` 的對照資料整理自 [`eight04/pyUAO`](https://github.com/eight04/pyUAO)。
 
 ## BBS 指令參考
 
-完整的 BBS 指令對照表請參考：[BBS_COMMANDS.md](BBS_COMMANDS.md)
+常見操作可參考 [BBS_COMMANDS.md](BBS_COMMANDS.md)。
 
-包含：
-- 基本瀏覽指令（方向鍵、換頁）
-- 功能指令（發文、刪文、搜尋）
-- 編輯器指令（檔案操作、游標移動、文字編輯）
-- 常用操作流程範例
+內容包含：
 
-## 技術細節
-
-- 使用 WebSocket 連接到 `wss://term.gamer.com.tw/bbs`
-- 支援 Big5 編碼轉換（BBS 常用編碼）
-- 處理 ANSI 控制碼和特殊按鍵
-- 支援完整的 Ctrl 組合鍵
-- 基於 MCP SDK 建立
+- 基本瀏覽指令
+- 功能指令
+- 編輯器操作
+- 常見流程範例
 
 ## 開發
 
 ```bash
-# 開發模式（自動重新編譯）
+# watch mode
 npm run dev
 
-# 建置
+# build
 npm run build
 
-# 執行
+# run compiled server
 npm start
 ```
 
 ## 注意事項
 
-- BBS 使用 Big5 編碼，畫面可能包含 ANSI 控制碼
-- 某些操作可能需要特定的按鍵順序
-- 建議先手動連接 BBS 了解操作流程，再透過此工具操作
+- 畫面含 ANSI 控制碼與終端游標移動效果，解析結果依當前可視區塊而定
+- 某些 BBS 操作需要嚴格的按鍵順序
+- 若畫面狀態異常，可先使用 `bbs_reset_screen`
+- `.env`、`.mcp.json`、本機代理工具設定目錄不應提交到版本庫

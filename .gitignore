@@ -5,3 +5,13 @@ dist/
 .env
 .mcp.json
 config.json
+.codex/
+.gemini/
+.codex/config.toml
+.gemini/settings.json
+tmp/pyuao/__init__.py
+tmp/pyuao/__pycache__/__init__.cpython-314.pyc
+tmp/pyuao/__pycache__/b2u.cpython-314.pyc
+tmp/pyuao/__pycache__/u2b.cpython-314.pyc
+tmp/pyuao/b2u.py
+tmp/pyuao/u2b.py
