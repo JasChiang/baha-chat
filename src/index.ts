@@ -30,6 +30,13 @@ interface BBSConnection {
   buffer: Buffer;
 }
 
+interface ThreadSearchOptions {
+  keyword: string;
+  authorPrefix: string;
+  markedMode: "any" | "yes" | "no";
+  gyMin: number | null;
+}
+
 class BahaBBSServer {
   private readonly terminalCols = 80;
   private readonly terminalRows = 24;
@@ -192,6 +199,82 @@ class BahaBBSServer {
             properties: {},
           },
         },
+        {
+          name: "bbs_collect_thread",
+          description: "Collect the current article and related-topic posts into structured data for thread summarization",
+          inputSchema: {
+            type: "object",
+            properties: {
+              keyword_search: {
+                type: "string",
+                description: "Optional board-list keyword search using '~' thread mode before collecting posts",
+              },
+              author_prefix: {
+                type: "string",
+                description: "Optional author/ID prefix filter for '~' thread mode. Use '*' as the first character for fuzzy matching",
+              },
+              marked_mode: {
+                type: "string",
+                enum: ["any", "yes", "no"],
+                default: "any",
+                description: "Optional m-mark filter for '~' thread mode",
+              },
+              gy_min: {
+                type: "number",
+                minimum: 0,
+                description: "Optional GY lower bound for '~' thread mode",
+              },
+              max_related_posts: {
+                type: "number",
+                minimum: 1,
+                maximum: 20,
+                default: 5,
+                description: "Maximum number of related posts to collect, including the seed article",
+              },
+            },
+          },
+        },
+        {
+          name: "bbs_summarize_thread",
+          description: "Summarize the current article thread into a neutral or BBS-ready draft without posting it",
+          inputSchema: {
+            type: "object",
+            properties: {
+              keyword_search: {
+                type: "string",
+                description: "Optional board-list keyword search using '~' thread mode before summarizing",
+              },
+              author_prefix: {
+                type: "string",
+                description: "Optional author/ID prefix filter for '~' thread mode. Use '*' as the first character for fuzzy matching",
+              },
+              marked_mode: {
+                type: "string",
+                enum: ["any", "yes", "no"],
+                default: "any",
+                description: "Optional m-mark filter for '~' thread mode",
+              },
+              gy_min: {
+                type: "number",
+                minimum: 0,
+                description: "Optional GY lower bound for '~' thread mode",
+              },
+              max_related_posts: {
+                type: "number",
+                minimum: 1,
+                maximum: 20,
+                default: 8,
+                description: "Maximum number of related posts to analyze, including the seed article",
+              },
+              style: {
+                type: "string",
+                enum: ["neutral", "bbs_post"],
+                default: "neutral",
+                description: "Summary output style",
+              },
+            },
+          },
+        },
       ];
 
       return { tools };
@@ -240,6 +323,19 @@ class BahaBBSServer {
 
           case "bbs_reset_screen":
             return await this.handleResetScreen();
+
+          case "bbs_collect_thread":
+            return await this.handleCollectThread(
+              typeof args?.max_related_posts === "number" ? args.max_related_posts : 5,
+              this.parseThreadSearchOptions(args)
+            );
+
+          case "bbs_summarize_thread":
+            return await this.handleSummarizeThread(
+              typeof args?.max_related_posts === "number" ? args.max_related_posts : 8,
+              typeof args?.style === "string" ? args.style : "neutral",
+              this.parseThreadSearchOptions(args)
+            );
 
           default:
             throw new Error(`Unknown tool: ${name}`);
@@ -295,10 +391,369 @@ class BahaBBSServer {
     this.connection.buffer = Buffer.alloc(0);
   }
 
+  private getSpecialKeyBuffer(key: string): Buffer {
+    const keyMap: { [key: string]: Buffer } = {
+      up: Buffer.from([0x1b, 0x5b, 0x41]),
+      down: Buffer.from([0x1b, 0x5b, 0x42]),
+      right: Buffer.from([0x1b, 0x5b, 0x43]),
+      left: Buffer.from([0x1b, 0x5b, 0x44]),
+      pgup: Buffer.from([0x1b, 0x5b, 0x35, 0x7e]),
+      pageup: Buffer.from([0x1b, 0x5b, 0x35, 0x7e]),
+      pgdn: Buffer.from([0x1b, 0x5b, 0x36, 0x7e]),
+      pagedown: Buffer.from([0x1b, 0x5b, 0x36, 0x7e]),
+      home: Buffer.from([0x1b, 0x5b, 0x48]),
+      end: Buffer.from([0x1b, 0x5b, 0x46]),
+      enter: Buffer.from([0x0d]),
+      esc: Buffer.from([0x1b]),
+      space: Buffer.from([0x20]),
+      backspace: Buffer.from([0x08]),
+      delete: Buffer.from([0x7f]),
+      insert: Buffer.from([0x1b, 0x5b, 0x32, 0x7e]),
+    };
+
+    const keyCode = keyMap[key.toLowerCase()];
+    if (!keyCode) {
+      throw new Error(`Unknown key: ${key}`);
+    }
+
+    return keyCode;
+  }
+
+  private async sendRawBuffer(buffer: Buffer, timeoutMs: number): Promise<string> {
+    const ws = this.ensureActiveConnection();
+    ws.send(buffer);
+    await this.waitForScreenUpdate(timeoutMs);
+    return this.getScreenContent();
+  }
+
+  private async sendRawText(text: string, timeoutMs: number = 1000): Promise<string> {
+    return this.sendRawBuffer(encodeBig5UAO(text), timeoutMs);
+  }
+
+  private async sendRawKey(key: string, timeoutMs: number = 800): Promise<string> {
+    return this.sendRawBuffer(this.getSpecialKeyBuffer(key), timeoutMs);
+  }
+
+  private normalizeThreadTitle(title: string): string {
+    return title
+      .replace(/^[>=>◆◇\s]+/, "")
+      .replace(/^Re(?::|\^\d+:)?\s*/i, "")
+      .replace(/^=>\s*/, "")
+      .replace(/^\[[^\]]+\]\s*/, "")
+      .trim();
+  }
+
+  private buildTextTokens(text: string): string[] {
+    const asciiTokens = text
+      .toLowerCase()
+      .match(/[a-z0-9]{2,}/g) ?? [];
+    const cjkChars = text.match(/[\u4e00-\u9fff]/g) ?? [];
+    return [...asciiTokens, ...cjkChars];
+  }
+
+  private similarityScore(a: string, b: string): number {
+    const aTokens = new Set(this.buildTextTokens(a));
+    const bTokens = new Set(this.buildTextTokens(b));
+
+    if (aTokens.size === 0 || bTokens.size === 0) {
+      return 0;
+    }
+
+    let overlap = 0;
+    for (const token of aTokens) {
+      if (bTokens.has(token)) {
+        overlap++;
+      }
+    }
+
+    return overlap / Math.max(aTokens.size, bTokens.size);
+  }
+
+  private looksLikeSamePoint(a: string, b: string): boolean {
+    if (!a || !b) {
+      return false;
+    }
+
+    if (a === b || a.includes(b) || b.includes(a)) {
+      return true;
+    }
+
+    return this.similarityScore(a, b) >= 0.55;
+  }
+
+  private compressBodyPreview(body: string, maxLines: number = 3): string {
+    return body
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .slice(0, maxLines)
+      .join(' ');
+  }
+
+  private sanitizeArticlePageLines(content: string): string[] {
+    const lines = content.split('\n');
+    const sanitized: string[] = [];
+    let metadataEnded = false;
+
+    for (const line of lines) {
+      if (!metadataEnded) {
+        if (line.includes("時間:")) {
+          metadataEnded = true;
+        }
+        continue;
+      }
+
+      if (
+        line.includes("文章選讀") ||
+        line.includes("(g)寫得好!") ||
+        line.includes("(h)求助") ||
+        line.includes("(PgUp)(PgDn)") ||
+        line.includes("相關主題") ||
+        line.includes("搜尋標題") ||
+        line.includes("※ Origin:")
+      ) {
+        continue;
+      }
+
+      if (/瀏覽\s+P\.\d+\(\d+%\)/.test(line)) {
+        continue;
+      }
+
+      sanitized.push(line);
+    }
+
+    return sanitized;
+  }
+
+  private collectArticleSectionsFromPages(pages: string[]) {
+    const firstPage = pages[0] ?? "";
+    const metadata = this.parseArticleView(firstPage).metadata;
+    const bodyLines: string[] = [];
+    const quoteLines: string[] = [];
+    const signatureLines: string[] = [];
+    let inSignature = false;
+
+    for (const page of pages) {
+      for (const line of this.sanitizeArticlePageLines(page)) {
+        if (line.trim() === "--") {
+          inSignature = true;
+          continue;
+        }
+
+        if (inSignature) {
+          signatureLines.push(line);
+          continue;
+        }
+
+        if (line.startsWith(">") || line.startsWith("※ 引述《")) {
+          quoteLines.push(line);
+          continue;
+        }
+
+        bodyLines.push(line);
+      }
+    }
+
+    const body = bodyLines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+    const preview = body
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .slice(0, 4)
+      .join('\n');
+
+    return {
+      metadata,
+      normalized_title: this.normalizeThreadTitle(metadata.title),
+      quote_count: quoteLines.filter((line) => line.trim().length > 0).length,
+      body,
+      body_preview: preview,
+      compact_preview: this.compressBodyPreview(body),
+      signature_preview: signatureLines
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+        .slice(0, 3),
+    };
+  }
+
+  private async moveToThreadSeedArticle() {
+    const currentPages = await this.collectCurrentArticlePages();
+    const currentArticle = this.collectArticleSectionsFromPages(currentPages);
+    const currentFingerprint = `${currentArticle.metadata.author}|${currentArticle.metadata.time}|${currentArticle.metadata.title}`;
+
+    const seedScreen = await this.sendRawText("=", 1000);
+    if (this.detectScreenState(seedScreen) !== "article_view") {
+      return {
+        navigated: false,
+        currentArticle,
+      };
+    }
+
+    const seedPages = await this.collectCurrentArticlePages();
+    const seedArticle = this.collectArticleSectionsFromPages(seedPages);
+    const seedFingerprint = `${seedArticle.metadata.author}|${seedArticle.metadata.time}|${seedArticle.metadata.title}`;
+
+    if (seedFingerprint === currentFingerprint) {
+      return {
+        navigated: false,
+        currentArticle: seedArticle,
+      };
+    }
+
+    return {
+      navigated: true,
+      currentArticle: seedArticle,
+    };
+  }
+
+  private async collectCurrentArticlePages(maxPages: number = 12): Promise<string[]> {
+    const pages: string[] = [];
+    const seenFingerprints = new Set<string>();
+
+    for (let i = 0; i < maxPages; i++) {
+      const screen = this.getScreenContent();
+      const fingerprint = screen
+        .replace(/瀏覽\s+P\.\d+\(\d+%\).*/g, "")
+        .replace(/文章選讀.*/g, "")
+        .trim();
+
+      if (seenFingerprints.has(fingerprint)) {
+        break;
+      }
+
+      seenFingerprints.add(fingerprint);
+      pages.push(screen);
+
+      if (screen.includes("文章選讀") || screen.includes("※ Origin:")) {
+        break;
+      }
+
+      await this.sendRawKey("pgdn");
+    }
+
+    return pages;
+  }
+
+  private async ensureArticleViewFromCurrentState(): Promise<void> {
+    const state = this.detectScreenState(this.getScreenContent());
+
+    if (state === "article_view") {
+      return;
+    }
+
+    if (state === "board_list" || state === "thread_list") {
+      await this.sendRawKey("right");
+      return;
+    }
+
+    throw new Error("bbs_collect_thread works from board list, thread list, or article view.");
+  }
+
+  private parseThreadSearchOptions(args: any): ThreadSearchOptions {
+    const gyMin =
+      typeof args?.gy_min === "number" && Number.isFinite(args.gy_min)
+        ? Math.max(0, Math.floor(args.gy_min))
+        : null;
+    const markedMode =
+      args?.marked_mode === "yes" || args?.marked_mode === "no" ? args.marked_mode : "any";
+
+    return {
+      keyword: typeof args?.keyword_search === "string" ? args.keyword_search.trim() : "",
+      authorPrefix: typeof args?.author_prefix === "string" ? args.author_prefix.trim() : "",
+      markedMode,
+      gyMin,
+    };
+  }
+
+  private shouldRunThreadSearch(options: ThreadSearchOptions): boolean {
+    return Boolean(
+      options.keyword ||
+      options.authorPrefix ||
+      options.markedMode !== "any" ||
+      options.gyMin !== null
+    );
+  }
+
+  private async submitPromptValue(value: string = "", delayMs: number = 800) {
+    if (value) {
+      await this.sendRawText(value, delayMs);
+    }
+
+    return this.sendRawKey("enter", delayMs);
+  }
+
+  private async enterThreadKeywordMode(options: ThreadSearchOptions) {
+    if (!this.shouldRunThreadSearch(options)) {
+      return;
+    }
+
+    const state = this.detectScreenState(this.getScreenContent());
+    if (state !== "board_list") {
+      throw new Error("keyword_search requires starting from a board list screen.");
+    }
+
+    const modeScreen = await this.sendRawText("~", 800);
+    if (!modeScreen.includes("[串接模式]")) {
+      throw new Error("Failed to enter thread keyword mode with '~'.");
+    }
+
+    if (options.keyword) {
+      await this.sendRawText(options.keyword, 800);
+    }
+
+    let screen = await this.sendRawKey("enter", 1000);
+
+    if (screen.includes("作者(第一個字打*表模糊搜尋)：")) {
+      screen = await this.submitPromptValue(options.authorPrefix, 1000);
+    }
+
+    if (screen.includes("限定有m標記的文章? [y/N]：")) {
+      const markedValue =
+        options.markedMode === "yes" ? "y" : options.markedMode === "no" ? "n" : "";
+      screen = await this.submitPromptValue(markedValue, 1000);
+    }
+
+    if (screen.includes("請輸入GY值下限[0]：")) {
+      const gyValue = options.gyMin !== null ? String(options.gyMin) : "";
+      screen = await this.submitPromptValue(gyValue, 1000);
+    }
+
+    if (!screen.includes("【主題串列】")) {
+      throw new Error("Thread keyword mode did not reach the topic list after filters.");
+    }
+  }
+
+  private isSocketUsable(): boolean {
+    return this.connection.ws !== null && this.connection.ws.readyState === WebSocket.OPEN;
+  }
+
+  private ensureActiveConnection() {
+    if (!this.isSocketUsable()) {
+      this.cleanupConnectionState();
+      throw new Error("Not connected to BBS. Use bbs_connect first.");
+    }
+
+    this.connection.connected = true;
+    return this.connection.ws as WebSocket;
+  }
+
+  private cleanupConnectionState(options: { preserveTerminal?: boolean } = {}) {
+    this.connection.connected = false;
+    this.connection.ws = null;
+    this.connection.buffer = Buffer.alloc(0);
+    this.connection.lastScreenContent = "";
+
+    if (!options.preserveTerminal && this.connection.terminal) {
+      this.connection.terminal.dispose();
+      this.connection.terminal = null;
+    }
+  }
+
   private detectScreenState(content: string): string {
     if (content.includes("【主功能表】")) return "main_menu";
     if (content.includes("請輸入看板名稱")) return "board_search";
     if (content.includes("看板《") && content.includes("[^P]發表")) return "board_list";
+    if (content.includes("【主題串列】") && content.includes("[串接模式]關鍵字:")) return "thread_list";
     if (content.includes("編輯文章") && content.includes("Ctrl-Z")) return "editor";
     if (content.includes("文 章 發 表 綱 領")) return "posting_guide";
     if (content.includes("類別:") && content.includes("看板")) return "category_select";
@@ -707,7 +1162,8 @@ class BahaBBSServer {
   }
 
   private async handleConnect(): Promise<CallToolResult> {
-    if (this.connection.connected) {
+    if (this.isSocketUsable()) {
+      this.connection.connected = true;
       return {
         content: [
           {
@@ -718,7 +1174,11 @@ class BahaBBSServer {
       };
     }
 
+    this.cleanupConnectionState();
+
     return new Promise<CallToolResult>((resolve, reject) => {
+      let settled = false;
+
       try {
         this.connection.ws = new WebSocket("wss://term.gamer.com.tw/bbs", {
           origin: "https://term.gamer.com.tw"
@@ -726,6 +1186,7 @@ class BahaBBSServer {
         this.connection.buffer = Buffer.alloc(0);
 
         this.connection.ws.on("open", () => {
+          settled = true;
           this.connection.connected = true;
 
           // Initialize terminal emulator
@@ -754,39 +1215,46 @@ class BahaBBSServer {
 
         this.connection.ws.on("error", (error) => {
           console.error("WebSocket error:", error);
-          if (!this.connection.connected) {
+          if (!settled) {
+            this.cleanupConnectionState();
             reject(new Error(`WebSocket error: ${error.message || error}`));
           }
         });
 
         this.connection.ws.on("close", () => {
-          this.connection.connected = false;
-          this.connection.ws = null;
-          if (!this.connection.connected) {
+          const wasConnected = this.connection.connected;
+          this.cleanupConnectionState({ preserveTerminal: true });
+          if (!settled) {
             reject(new Error("WebSocket closed before connection was established"));
+            return;
+          }
+
+          if (wasConnected && this.connection.terminal) {
+            // Keep the last visible screen for inspection after unexpected disconnects.
+            this.connection.lastScreenContent = this.getScreenContent();
           }
         });
 
         // Timeout after 30 seconds
         setTimeout(() => {
-          if (!this.connection.connected) {
+          if (!settled) {
+            this.cleanupConnectionState();
             reject(new Error("Connection timeout after 30 seconds. WebSocket 'open' event was not fired."));
           }
         }, 30000);
       } catch (error) {
+        this.cleanupConnectionState();
         reject(error);
       }
     });
   }
 
   private async handleSend(text: string, returnMode: string = "summary"): Promise<CallToolResult> {
-    if (!this.connection.connected || !this.connection.ws) {
-      throw new Error("Not connected to BBS. Use bbs_connect first.");
-    }
+    const ws = this.ensureActiveConnection();
 
     // Encode text as Big5-UAO and send.
     const encoded = encodeBig5UAO(text);
-    this.connection.ws.send(encoded);
+    ws.send(encoded);
 
     // Wait for screen update
     await this.waitForScreenUpdate(1000);
@@ -807,48 +1275,7 @@ class BahaBBSServer {
   }
 
   private async handleSendKey(key: string, returnMode: string = "summary"): Promise<CallToolResult> {
-    if (!this.connection.connected || !this.connection.ws) {
-      throw new Error("Not connected to BBS. Use bbs_connect first.");
-    }
-
-    // Map keys to control codes
-    const keyMap: { [key: string]: Buffer } = {
-      // Arrow keys
-      up: Buffer.from([0x1b, 0x5b, 0x41]), // ESC[A
-      down: Buffer.from([0x1b, 0x5b, 0x42]), // ESC[B
-      right: Buffer.from([0x1b, 0x5b, 0x43]), // ESC[C
-      left: Buffer.from([0x1b, 0x5b, 0x44]), // ESC[D
-
-      // Page navigation
-      pgup: Buffer.from([0x1b, 0x5b, 0x35, 0x7e]), // ESC[5~
-      pageup: Buffer.from([0x1b, 0x5b, 0x35, 0x7e]), // ESC[5~
-      pgdn: Buffer.from([0x1b, 0x5b, 0x36, 0x7e]), // ESC[6~
-      pagedown: Buffer.from([0x1b, 0x5b, 0x36, 0x7e]), // ESC[6~
-
-      // Home/End
-      home: Buffer.from([0x1b, 0x5b, 0x48]), // ESC[H
-      end: Buffer.from([0x1b, 0x5b, 0x46]), // ESC[F
-
-      // Other special keys
-      enter: Buffer.from([0x0d]), // CR
-      esc: Buffer.from([0x1b]), // ESC
-      space: Buffer.from([0x20]), // Space
-      backspace: Buffer.from([0x08]), // BS
-      delete: Buffer.from([0x7f]), // DEL
-      insert: Buffer.from([0x1b, 0x5b, 0x32, 0x7e]), // ESC[2~
-    };
-
-    const keyCode = keyMap[key.toLowerCase()];
-    if (!keyCode) {
-      throw new Error(`Unknown key: ${key}`);
-    }
-
-    this.connection.ws.send(keyCode);
-
-    // Wait for screen update
-    await this.waitForScreenUpdate(800);
-
-    const screenContent = this.getScreenContent();
+    const screenContent = await this.sendRawKey(key);
     const response = returnMode === "summary"
       ? this.getScreenSummary(screenContent)
       : screenContent;
@@ -864,9 +1291,7 @@ class BahaBBSServer {
   }
 
   private async handleSendCtrl(letter: string, returnMode: string = "summary"): Promise<CallToolResult> {
-    if (!this.connection.connected || !this.connection.ws) {
-      throw new Error("Not connected to BBS. Use bbs_connect first.");
-    }
+    const ws = this.ensureActiveConnection();
 
     // Convert letter to uppercase and get control code
     const upperLetter = letter.toUpperCase();
@@ -881,7 +1306,7 @@ class BahaBBSServer {
     const ctrlCode = charCode - 64;
     const keyCode = Buffer.from([ctrlCode]);
 
-    this.connection.ws.send(keyCode);
+    ws.send(keyCode);
 
     // Wait for screen update
     await this.waitForScreenUpdate(800);
@@ -902,9 +1327,7 @@ class BahaBBSServer {
   }
 
   private async handleGetScreen(returnMode: string = "summary"): Promise<CallToolResult> {
-    if (!this.connection.connected) {
-      throw new Error("Not connected to BBS. Use bbs_connect first.");
-    }
+    this.ensureActiveConnection();
 
     const screenContent = this.getScreenContent();
     const state = this.detectScreenState(screenContent);
@@ -950,9 +1373,7 @@ class BahaBBSServer {
   }
 
   private async handleGetContext(): Promise<CallToolResult> {
-    if (!this.connection.connected) {
-      throw new Error("Not connected to BBS. Use bbs_connect first.");
-    }
+    this.ensureActiveConnection();
 
     const screenContent = this.getScreenContent();
     const contextData = this.parseContext(screenContent);
@@ -968,7 +1389,8 @@ class BahaBBSServer {
   }
 
   private async handleDisconnect(): Promise<CallToolResult> {
-    if (!this.connection.connected || !this.connection.ws) {
+    if (!this.isSocketUsable()) {
+      this.cleanupConnectionState();
       return {
         content: [
           {
@@ -979,15 +1401,9 @@ class BahaBBSServer {
       };
     }
 
-    this.connection.ws.close();
-    this.connection.connected = false;
-    this.connection.ws = null;
-    this.connection.buffer = Buffer.alloc(0);
-
-    if (this.connection.terminal) {
-      this.connection.terminal.dispose();
-      this.connection.terminal = null;
-    }
+    const ws = this.connection.ws as WebSocket;
+    ws.close();
+    this.cleanupConnectionState();
 
     return {
       content: [
@@ -1000,9 +1416,7 @@ class BahaBBSServer {
   }
 
   private async handleResetScreen(): Promise<CallToolResult> {
-    if (!this.connection.connected || !this.connection.ws) {
-      throw new Error("Not connected to BBS. Use bbs_connect first.");
-    }
+    this.ensureActiveConnection();
 
     this.resetLocalTerminal();
     return {
@@ -1010,6 +1424,214 @@ class BahaBBSServer {
         {
           type: "text",
           text: "Local terminal screen reset. Send one key (e.g., enter/space) to refresh from BBS.",
+        } as TextContent,
+      ],
+    };
+  }
+
+  private async collectThreadData(maxRelatedPosts: number, threadSearch: ThreadSearchOptions) {
+    this.ensureActiveConnection();
+    if (this.shouldRunThreadSearch(threadSearch)) {
+      await this.enterThreadKeywordMode(threadSearch);
+    }
+    await this.ensureArticleViewFromCurrentState();
+
+    const collected = [];
+    const seenArticles = new Set<string>();
+    const boundedMaxPosts = Math.min(Math.max(Math.floor(maxRelatedPosts), 1), 20);
+    let repeatedPointStreak = 0;
+
+    const seedResult = await this.moveToThreadSeedArticle();
+    const seedArticle = seedResult.currentArticle;
+    const seedFingerprint = `${seedArticle.metadata.author}|${seedArticle.metadata.time}|${seedArticle.metadata.title}`;
+    seenArticles.add(seedFingerprint);
+    collected.push({
+      index: 1,
+      role: "seed",
+      title: seedArticle.metadata.title,
+      normalized_title: seedArticle.normalized_title,
+      author: seedArticle.metadata.author,
+      time: seedArticle.metadata.time,
+      board: seedArticle.metadata.board,
+      quote_count: seedArticle.quote_count,
+      body_preview: seedArticle.body_preview,
+      compact_preview: seedArticle.compact_preview,
+      body_length: seedArticle.body.length,
+      signature_preview: seedArticle.signature_preview,
+    });
+
+    for (let i = 1; i < boundedMaxPosts; i++) {
+      const nextScreen = await this.sendRawText("+", 1000);
+      if (this.detectScreenState(nextScreen) !== "article_view") {
+        break;
+      }
+
+      const pages = await this.collectCurrentArticlePages();
+      const article = this.collectArticleSectionsFromPages(pages);
+      const fingerprint = `${article.metadata.author}|${article.metadata.time}|${article.metadata.title}`;
+
+      if (seenArticles.has(fingerprint)) {
+        break;
+      }
+
+      const compactPreview = article.compact_preview;
+      const duplicateOf: any = collected.find((post: any) =>
+        this.looksLikeSamePoint(post.compact_preview, compactPreview)
+      );
+
+      seenArticles.add(fingerprint);
+      collected.push({
+        index: i + 1,
+        role: "related",
+        title: article.metadata.title,
+        normalized_title: article.normalized_title,
+        author: article.metadata.author,
+        time: article.metadata.time,
+        board: article.metadata.board,
+        quote_count: article.quote_count,
+        body_preview: article.body_preview,
+        compact_preview: compactPreview,
+        body_length: article.body.length,
+        signature_preview: article.signature_preview,
+        duplicate_of: duplicateOf ? duplicateOf.index : null,
+      });
+
+      if (duplicateOf) {
+        repeatedPointStreak += 1;
+      } else {
+        repeatedPointStreak = 0;
+      }
+
+      if (repeatedPointStreak >= 3) {
+        break;
+      }
+    }
+
+    const seed = collected[0] ?? null;
+    const normalizedTitle = seed ? seed.normalized_title : "";
+    const representativePosts = collected.filter((post: any) => !post.duplicate_of);
+
+    return {
+      state: "thread_collected",
+      navigation_mode: "related_topics",
+      seed_title: seed?.title ?? "",
+      normalized_title: normalizedTitle,
+      posts_collected: collected.length,
+      representative_posts: representativePosts.length,
+      notes: [
+        "Collected from current article or board cursor",
+        this.shouldRunThreadSearch(threadSearch)
+          ? "Thread search can start from keyword, author/ID prefix, m-mark filter, or GY lower bound"
+          : "Started from the current board cursor or article view",
+        "Moved to thread seed with '=' when possible",
+        "Followed BBS related-topic navigation with '+'",
+        "Body preview excludes quote lines and signature lines when possible",
+        "Stops early when consecutive related posts mostly repeat existing points",
+      ],
+      posts: collected,
+    };
+  }
+
+  private buildDiscussionPoints(posts: any[]) {
+    const representatives = posts.filter((post) => !post.duplicate_of && post.compact_preview);
+    const points = representatives.map((post) => {
+      const supportCount = posts.filter(
+        (candidate) => candidate.index === post.index || candidate.duplicate_of === post.index
+      ).length;
+
+      return {
+        index: post.index,
+        support_count: supportCount,
+        representative_preview: post.compact_preview,
+        author: post.author,
+      };
+    });
+
+    points.sort((a, b) => b.support_count - a.support_count || a.index - b.index);
+    return points.slice(0, 4);
+  }
+
+  private composeNeutralSummary(threadData: any, discussionPoints: any[]) {
+    const topic = threadData.normalized_title || threadData.seed_title;
+    const intro =
+      `這串主要是在討論 ${topic}。` +
+      (threadData.posts_collected > 1
+        ? `我先整理了目前比較集中的意見。`
+        : `目前可讀到的回應不多，先整理可見重點。`);
+
+    const pointLines = discussionPoints.map((point, idx) =>
+      `${idx + 1}. ${point.representative_preview}`
+    );
+
+    const closing =
+      discussionPoints.length > 1
+        ? "整體看下來，這串有幾個重複出現的觀點，但也混有不少短接話或補一句的回文。"
+        : "整體看下來，這串目前比較像單一方向的補充，尚未出現太明顯的分歧。";
+
+    return [intro, "", "目前較常出現的意見包括：", ...pointLines, "", closing].join("\n");
+  }
+
+  private composeBbsPostSummary(threadData: any, discussionPoints: any[]) {
+    const topic = threadData.normalized_title || threadData.seed_title;
+    const lines = [
+      `幫忙整理一下這串 ${topic} 的重點：`,
+      "",
+      `目前看下來，這串比較集中的意見有幾個。`,
+      ...discussionPoints.map((point, idx) => `${idx + 1}. ${point.representative_preview}`),
+      "",
+      threadData.posts_collected > discussionPoints.length + 1
+        ? "其餘回文有不少是在接前一句，或是重複補同一個方向。"
+        : "目前回文方向還算集中，沒有明顯分成很多支線。"
+    ];
+
+    return lines.join("\n");
+  }
+
+  private async handleCollectThread(
+    maxRelatedPosts: number = 5,
+    threadSearch: ThreadSearchOptions
+  ): Promise<CallToolResult> {
+    const threadData = await this.collectThreadData(maxRelatedPosts, threadSearch);
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(threadData, null, 2),
+        } as TextContent,
+      ],
+    };
+  }
+
+  private async handleSummarizeThread(
+    maxRelatedPosts: number = 8,
+    style: string = "neutral",
+    threadSearch: ThreadSearchOptions
+  ): Promise<CallToolResult> {
+    const threadData = await this.collectThreadData(maxRelatedPosts, threadSearch);
+    const discussionPoints = this.buildDiscussionPoints(threadData.posts);
+    const summaryDraft = style === "bbs_post"
+      ? this.composeBbsPostSummary(threadData, discussionPoints)
+      : this.composeNeutralSummary(threadData, discussionPoints);
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              state: "thread_summarized",
+              style,
+              topic: threadData.normalized_title || threadData.seed_title,
+              posts_collected: threadData.posts_collected,
+              representative_posts: threadData.representative_posts,
+              discussion_points: discussionPoints,
+              summary_draft: summaryDraft,
+              note: "Draft only. Review before posting back to BBS.",
+            },
+            null,
+            2
+          ),
         } as TextContent,
       ],
     };
@@ -1025,9 +1647,7 @@ class BahaBBSServer {
       );
     }
 
-    if (!this.connection.connected) {
-      throw new Error("Not connected to BBS. Use bbs_connect first.");
-    }
+    const ws = this.ensureActiveConnection();
 
     const steps: string[] = [];
 
@@ -1037,24 +1657,24 @@ class BahaBBSServer {
 
     // Send username
     const encodedUsername = encodeBig5UAO(username + "\r");
-    this.connection.ws?.send(encodedUsername);
+    ws.send(encodedUsername);
     await new Promise(resolve => setTimeout(resolve, 2000));
     steps.push("Sent username");
 
     // Send password (wait longer for BBS to be ready)
     const encodedPassword = encodeBig5UAO(password + "\r");
-    this.connection.ws?.send(encodedPassword);
+    ws.send(encodedPassword);
     await new Promise(resolve => setTimeout(resolve, 2000));
     steps.push("Sent password");
 
     // Handle duplicate login prompt (press Enter to confirm)
-    this.connection.ws?.send(Buffer.from([0x0d])); // Enter
+    ws.send(Buffer.from([0x0d])); // Enter
     await new Promise(resolve => setTimeout(resolve, 1000));
     steps.push("Handled duplicate login prompt");
 
     // Skip post-login pages (系統公告、十大熱門、過路勇者足跡、etc.)
     for (let i = 0; i < 5; i++) {
-      this.connection.ws?.send(Buffer.from([0x20])); // Space
+      ws.send(Buffer.from([0x20])); // Space
       await new Promise(resolve => setTimeout(resolve, 800));
     }
     steps.push("Skipped post-login pages");
