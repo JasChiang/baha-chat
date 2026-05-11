@@ -275,6 +275,136 @@ class BahaBBSServer {
             },
           },
         },
+        {
+          name: "stock_quote",
+          description: "Get near-realtime Taiwan stock quotes from TWSE mis API (盤中延遲約 0-20 秒). Returns OHLC, volume, 5-tier bid/ask, prior close. Supports: plain code ('2330' auto-detects tse/otc), explicit prefix ('tse_2330.tw'/'otc_8299.tw'), and market index aliases ('TAIEX'/'加權'/'t00' → 加權指數; 'TPEX'/'櫃買'/'o00' → 櫃買指數).",
+          inputSchema: {
+            type: "object",
+            properties: {
+              symbols: {
+                type: "array",
+                items: { type: "string" },
+                minItems: 1,
+                maxItems: 20,
+                description: "Stock codes. Plain digits ('2330') tries both tse and otc; explicit prefix ('tse_2330.tw' / 'otc_8299.tw') skips detection.",
+              },
+            },
+            required: ["symbols"],
+          },
+        },
+        {
+          name: "bbs_enter_board",
+          description: "Composite shortcut: from main menu, search a board by name and enter it (s + name + Enter + Space for any 'press any key' welcome). Replaces 4 manual steps.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              name: { type: "string", description: "Board name, e.g. 'Chat', 'test'" },
+              return_mode: { type: "string", enum: ["full", "summary"], default: "summary" },
+            },
+            required: ["name"],
+          },
+        },
+        {
+          name: "bbs_jump_to_article",
+          description: "Composite shortcut: from a board list, jump cursor to a specific article id (id + Enter). Caller must already be on the board list.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              article_id: { type: "number", description: "Target article id (the integer shown in board list)" },
+              return_mode: { type: "string", enum: ["full", "summary"], default: "summary" },
+            },
+            required: ["article_id"],
+          },
+        },
+        {
+          name: "bbs_jump_and_read",
+          description: "Composite shortcut: from a board list, jump to article id, press → to read it, return content. One call replaces jump + Enter + right + get_screen.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              article_id: { type: "number", description: "Target article id" },
+              return_mode: { type: "string", enum: ["full", "summary"], default: "full" },
+            },
+            required: ["article_id"],
+          },
+        },
+        {
+          name: "bbs_read_thread",
+          description: "Composite shortcut: from a board list, jump to the seed article and walk forward N posts in the same thread using ']'. Returns concatenated content of each post (full screen of each).",
+          inputSchema: {
+            type: "object",
+            properties: {
+              article_id: { type: "number", description: "Seed article id" },
+              count: { type: "number", minimum: 1, maximum: 20, default: 5, description: "Number of posts to read including the seed" },
+            },
+            required: ["article_id"],
+          },
+        },
+        {
+          name: "bbs_start_reply",
+          description: "Composite shortcut: from an article view (or board list with cursor on target), drive the full reply wizard (y → F → Enter category → Enter title → Y quote → 0 sig → Enter → Ctrl-T to end). Leaves you in the editor at the end of quoted body, ready for content.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              return_mode: { type: "string", enum: ["full", "summary"], default: "summary" },
+            },
+          },
+        },
+        {
+          name: "bbs_save_post",
+          description: "Composite shortcut: in the editor with content already typed (or pass content to insert), append '--\\n本文由 AI 發送' signature when sign=true (default), then Ctrl-W → s → Enter to save. Returns the post-success screen.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              content: { type: "string", description: "Optional: content to send (with \\n line breaks) before saving. If omitted, only signs and saves." },
+              sign: { type: "boolean", default: true, description: "Append '--\\n本文由 AI 發送' signature before saving" },
+              return_mode: { type: "string", enum: ["full", "summary"], default: "summary" },
+            },
+          },
+        },
+        {
+          name: "stock_history",
+          description: "Get daily OHLC history for any Taiwan stock. TWSE listed (上市) uses official STOCK_DAY API; TPEX listed (上櫃, 8xxx etc.) falls back to FinMind (no token needed, free tier). Returns last N trading days oldest→newest. Each row tagged with source ('twse' / 'finmind').",
+          inputSchema: {
+            type: "object",
+            properties: {
+              symbol: { type: "string", description: "Stock code, e.g. '2330' or 'tse_2330.tw' (prefix stripped automatically)" },
+              days: { type: "number", minimum: 1, maximum: 240, default: 60, description: "Number of trading days back from today" },
+            },
+            required: ["symbol"],
+          },
+        },
+        {
+          name: "stock_indicators",
+          description: "Calculate technical indicators from daily history. Supports TWSE 上市 + TPEX 上櫃 (via FinMind fallback). Indicators: ma5/10/20/60/120/240, ema12/26, kd, macd, rsi(14), boll. Returns current values + last 5-day series for each.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              symbol: { type: "string", description: "Stock code" },
+              indicators: {
+                type: "array",
+                items: { type: "string" },
+                description: "List of indicators: ma5, ma10, ma20, ma60, ma120, ma240, ema12, ema26, kd, macd, rsi, boll. Default: ma5, ma20, kd, macd, rsi, boll.",
+              },
+              days: { type: "number", minimum: 30, maximum: 240, default: 120, description: "History range for calculation (need ≥60 for accurate MACD)" },
+            },
+            required: ["symbol"],
+          },
+        },
+        {
+          name: "bbs_reply_to",
+          description: "Full one-shot reply: assumes you are already on the target board list. Jumps to article id, runs start_reply wizard, types content, signs and saves. Set verify=true to also navigate back and confirm the post is visible.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              article_id: { type: "number", description: "Target article id (caller must already be on the board list)" },
+              content: { type: "string", description: "Reply content with \\n line breaks. Signature is appended automatically when sign=true." },
+              sign: { type: "boolean", default: true, description: "Append AI signature" },
+              verify: { type: "boolean", default: false, description: "After save, navigate to the new post and return its full content for verification" },
+            },
+            required: ["article_id", "content"],
+          },
+        },
       ];
 
       return { tools };
@@ -335,6 +465,79 @@ class BahaBBSServer {
               typeof args?.max_related_posts === "number" ? args.max_related_posts : 8,
               typeof args?.style === "string" ? args.style : "neutral",
               this.parseThreadSearchOptions(args)
+            );
+
+          case "stock_quote":
+            if (!args || !Array.isArray(args.symbols) || args.symbols.length === 0) {
+              throw new Error("Missing required parameter: symbols (non-empty array)");
+            }
+            return await this.handleStockQuote(args.symbols as string[]);
+
+          case "bbs_enter_board":
+            if (!args || typeof args.name !== "string" || args.name.length === 0) {
+              throw new Error("Missing required parameter: name");
+            }
+            return await this.handleEnterBoard(args.name, returnMode);
+
+          case "bbs_jump_to_article":
+            if (!args || typeof args.article_id !== "number") {
+              throw new Error("Missing required parameter: article_id (number)");
+            }
+            return await this.handleJumpToArticle(args.article_id, returnMode);
+
+          case "bbs_jump_and_read":
+            if (!args || typeof args.article_id !== "number") {
+              throw new Error("Missing required parameter: article_id (number)");
+            }
+            return await this.handleJumpAndRead(args.article_id, (args as any).return_mode || "full");
+
+          case "bbs_read_thread":
+            if (!args || typeof args.article_id !== "number") {
+              throw new Error("Missing required parameter: article_id (number)");
+            }
+            return await this.handleReadThread(
+              args.article_id,
+              typeof args.count === "number" ? args.count : 5
+            );
+
+          case "bbs_start_reply":
+            return await this.handleStartReply(returnMode);
+
+          case "bbs_save_post":
+            return await this.handleSavePost(
+              typeof args?.content === "string" ? args.content : "",
+              args?.sign !== false,
+              returnMode
+            );
+
+          case "bbs_reply_to":
+            if (!args || typeof args.article_id !== "number" || typeof args.content !== "string") {
+              throw new Error("Missing required parameters: article_id (number), content (string)");
+            }
+            return await this.handleReplyTo(
+              args.article_id,
+              args.content,
+              args.sign !== false,
+              args.verify === true
+            );
+
+          case "stock_history":
+            if (!args || typeof args.symbol !== "string") {
+              throw new Error("Missing required parameter: symbol");
+            }
+            return await this.handleStockHistory(
+              args.symbol,
+              typeof args.days === "number" ? args.days : 60
+            );
+
+          case "stock_indicators":
+            if (!args || typeof args.symbol !== "string") {
+              throw new Error("Missing required parameter: symbol");
+            }
+            return await this.handleStockIndicators(
+              args.symbol,
+              Array.isArray(args.indicators) ? (args.indicators as string[]) : ["ma5", "ma20", "kd", "macd", "rsi", "boll"],
+              typeof args.days === "number" ? args.days : 120
             );
 
           default:
@@ -1692,6 +1895,743 @@ class BahaBBSServer {
         } as TextContent,
       ],
     };
+  }
+
+  private normalizeStockSymbol(raw: string): string[] {
+    const s = raw.trim().toLowerCase();
+    const original = raw.trim();
+    // Market index aliases
+    const indexMap: Record<string, string> = {
+      "taiex": "tse_t00.tw",
+      "t00": "tse_t00.tw",
+      "加權": "tse_t00.tw",
+      "加權指數": "tse_t00.tw",
+      "大盤": "tse_t00.tw",
+      "tpex": "otc_o00.tw",
+      "o00": "otc_o00.tw",
+      "櫃買": "otc_o00.tw",
+      "櫃買指數": "otc_o00.tw",
+    };
+    if (indexMap[s]) return [indexMap[s]];
+    if (indexMap[original]) return [indexMap[original]];
+    if (/^(tse|otc)_[\w\d]+\.tw$/.test(s)) return [s];
+    if (/^\d{3,6}$/.test(s)) return [`tse_${s}.tw`, `otc_${s}.tw`];
+    return [s];
+  }
+
+  private parseFiveTier(raw: string): number[] {
+    if (!raw || raw === "-") return [];
+    return raw
+      .split("_")
+      .filter(x => x.length > 0)
+      .map(x => parseFloat(x))
+      .filter(x => !isNaN(x) && x > 0);
+  }
+
+  private async handleStockQuote(symbols: string[]): Promise<CallToolResult> {
+    const candidates = symbols.flatMap(s => this.normalizeStockSymbol(s));
+    if (candidates.length === 0) {
+      throw new Error("No valid stock symbols provided");
+    }
+
+    const exCh = candidates.join("|");
+    const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${encodeURIComponent(exCh)}&json=1&delay=0`;
+
+    let data: any;
+    try {
+      const res = await fetch(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+          "Accept": "application/json, text/plain, */*",
+          "Referer": "https://mis.twse.com.tw/stock/fibest.jsp",
+        },
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      data = await res.json();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new Error(`TWSE mis API fetch failed: ${msg}`);
+    }
+
+    if (data.rtcode !== "0000") {
+      throw new Error(`TWSE mis API error rtcode=${data.rtcode}: ${data.rtmessage}`);
+    }
+
+    const msgArray = Array.isArray(data.msgArray) ? data.msgArray : [];
+    if (msgArray.length === 0) {
+      throw new Error(`No data returned for symbols: ${symbols.join(", ")}`);
+    }
+
+    const quotes = msgArray.map((item: any) => {
+      const z = item.z && item.z !== "-" ? parseFloat(item.z) : null;
+      const y = item.y && item.y !== "-" ? parseFloat(item.y) : null;
+      const o = item.o && item.o !== "-" ? parseFloat(item.o) : null;
+      const h = item.h && item.h !== "-" ? parseFloat(item.h) : null;
+      const l = item.l && item.l !== "-" ? parseFloat(item.l) : null;
+      const v = item.v && item.v !== "-" ? parseInt(item.v, 10) : null;
+      const tv = item.tv && item.tv !== "-" ? parseInt(item.tv, 10) : null;
+      const bids = this.parseFiveTier(item.b || "");
+      const asks = this.parseFiveTier(item.a || "");
+      const midPrice = bids.length > 0 && asks.length > 0
+        ? (bids[0] + asks[0]) / 2
+        : null;
+      const lastPrice = z ?? midPrice ?? h ?? o ?? null;
+      const change = lastPrice !== null && y !== null ? lastPrice - y : null;
+      const changePct = change !== null && y !== null && y !== 0 ? (change / y) * 100 : null;
+
+      return {
+        code: item.ch || "",
+        name: item.n || "",
+        exchange: item.ex || "",
+        date: item.d || "",
+        timestamp: item["%"] || item.t || "",
+        last: lastPrice,
+        last_source: z !== null ? "trade" : midPrice !== null ? "mid" : "estimate",
+        prior_close: y,
+        open: o,
+        high: h,
+        low: l,
+        limit_up: item.u && item.u !== "-" ? parseFloat(item.u) : null,
+        limit_down: item.w && item.w !== "-" ? parseFloat(item.w) : null,
+        cumulative_volume: v,
+        tick_volume: tv,
+        change,
+        change_pct: changePct,
+        bid_top5: bids,
+        ask_top5: asks,
+      };
+    });
+
+    const lines: string[] = [`查詢時間: ${new Date().toISOString()}`, ""];
+    for (const q of quotes) {
+      lines.push(`【${q.code}】${q.name} (${q.exchange.toUpperCase()})`);
+      const arrow = q.change === null ? "" : q.change > 0 ? "↑" : q.change < 0 ? "↓" : "─";
+      const changeStr = q.change !== null && q.change_pct !== null
+        ? `${arrow} ${q.change.toFixed(2)} (${q.change_pct >= 0 ? "+" : ""}${q.change_pct.toFixed(2)}%)`
+        : "—";
+      const lastStr = q.last !== null ? `${q.last.toFixed(2)}` : "—";
+      const lastTag = q.last_source === "trade" ? "" : q.last_source === "mid" ? " (中價)" : " (估)";
+      lines.push(`  最新: ${lastStr}${lastTag}  ${changeStr}`);
+      lines.push(`  開: ${q.open ?? "—"}  高: ${q.high ?? "—"}  低: ${q.low ?? "—"}  昨收: ${q.prior_close ?? "—"}`);
+      if (q.cumulative_volume !== null) lines.push(`  累計量: ${q.cumulative_volume.toLocaleString()} 張`);
+      if (q.bid_top5.length > 0 || q.ask_top5.length > 0) {
+        lines.push(`  五檔買: ${q.bid_top5.join(" / ") || "—"}`);
+        lines.push(`  五檔賣: ${q.ask_top5.join(" / ") || "—"}`);
+      }
+      lines.push(`  時間: ${q.date} ${q.timestamp}`);
+      lines.push("");
+    }
+    lines.push("--- JSON ---");
+    lines.push(JSON.stringify(quotes, null, 2));
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: lines.join("\n"),
+        } as TextContent,
+      ],
+    };
+  }
+
+  // ===== Low-level building blocks for composite tools =====
+
+  private async _rawText(text: string, waitMs: number = 800): Promise<void> {
+    const ws = this.ensureActiveConnection();
+    ws.send(encodeBig5UAO(text));
+    await this.waitForScreenUpdate(waitMs);
+  }
+
+  private async _rawKey(key: string, waitMs: number = 800): Promise<void> {
+    await this.sendRawKey(key, waitMs);
+  }
+
+  private async _rawCtrl(letter: string, waitMs: number = 800): Promise<void> {
+    const ws = this.ensureActiveConnection();
+    const upperLetter = letter.toUpperCase();
+    const charCode = upperLetter.charCodeAt(0);
+    if (charCode < 65 || charCode > 90) {
+      throw new Error(`Invalid letter for Ctrl combination: ${letter}`);
+    }
+    const ctrlCode = charCode - 64;
+    ws.send(Buffer.from([ctrlCode]));
+    await this.waitForScreenUpdate(waitMs);
+  }
+
+  private formatScreen(returnMode: string): string {
+    const content = this.getScreenContent();
+    return returnMode === "summary" ? this.getScreenSummary(content) : content;
+  }
+
+  // ===== A 級：composite shortcuts =====
+
+  private async handleEnterBoard(name: string, returnMode: string): Promise<CallToolResult> {
+    await this._rawText("s", 600);
+    await this._rawText(name, 600);
+    await this._rawKey("enter", 1200);
+
+    // Some boards show a welcome page that needs Space to pass
+    const screen1 = this.getScreenContent();
+    if (/請按任意鍵繼續/.test(screen1)) {
+      await this._rawKey("space", 800);
+    }
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Entered board: ${name}\n\n${returnMode === "summary" ? "Summary" : "Screen"}:\n${this.formatScreen(returnMode)}`,
+        } as TextContent,
+      ],
+    };
+  }
+
+  private async handleJumpToArticle(articleId: number, returnMode: string): Promise<CallToolResult> {
+    await this._rawText(String(articleId), 500);
+    await this._rawKey("enter", 800);
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Jumped to article #${articleId}\n\n${returnMode === "summary" ? "Summary" : "Screen"}:\n${this.formatScreen(returnMode)}`,
+        } as TextContent,
+      ],
+    };
+  }
+
+  private async handleJumpAndRead(articleId: number, returnMode: string): Promise<CallToolResult> {
+    await this._rawText(String(articleId), 500);
+    await this._rawKey("enter", 800);
+    await this._rawKey("right", 1200);
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Article #${articleId}:\n\n${this.formatScreen(returnMode)}`,
+        } as TextContent,
+      ],
+    };
+  }
+
+  private async handleReadThread(articleId: number, count: number): Promise<CallToolResult> {
+    await this._rawText(String(articleId), 500);
+    await this._rawKey("enter", 800);
+    await this._rawKey("right", 1200);
+
+    const posts: string[] = [];
+    posts.push(`--- Post 1 ---\n${this.getScreenContent()}`);
+
+    for (let i = 1; i < count; i++) {
+      await this._rawText("]", 1200);
+      const screen = this.getScreenContent();
+      // If pressing ] returns to board list (no more in thread), stop
+      if (/\[←\]離開 \[→\]閱讀/.test(screen) && !/作者:/.test(screen)) {
+        posts.push(`--- Post ${i + 1}: thread ended (back to board list) ---`);
+        break;
+      }
+      posts.push(`--- Post ${i + 1} ---\n${screen}`);
+    }
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Thread starting at #${articleId} (${posts.length} post(s)):\n\n${posts.join("\n\n")}`,
+        } as TextContent,
+      ],
+    };
+  }
+
+  private async handleStartReply(returnMode: string): Promise<CallToolResult> {
+    // y from article view OR board list (cursor on target)
+    await this._rawText("y", 600);
+    // F = reply to board
+    await this._rawText("F", 600);
+    await this._rawKey("enter", 800);
+    // Skip category selector
+    await this._rawKey("enter", 800);
+    // Accept default Re: title
+    await this._rawKey("enter", 800);
+    // Quote original
+    await this._rawText("Y", 600);
+    await this._rawKey("enter", 800);
+    // No predefined sig (we add it manually)
+    await this._rawText("0", 600);
+    await this._rawKey("enter", 1200);
+    // Jump to end of file in editor
+    await this._rawCtrl("t", 600);
+
+    const screen = this.getScreenContent();
+    const inEditor = /編輯文章/.test(screen);
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Reply wizard finished. In editor: ${inEditor}\n\n${returnMode === "summary" ? "Summary" : "Screen"}:\n${this.formatScreen(returnMode)}`,
+        } as TextContent,
+      ],
+    };
+  }
+
+  private async handleSavePost(content: string, sign: boolean, returnMode: string): Promise<CallToolResult> {
+    // Build full payload
+    let payload = content || "";
+    if (sign) {
+      if (payload.length > 0 && !payload.endsWith("\n")) payload += "\n";
+      payload += "--\n本文由 AI 發送";
+    }
+
+    if (payload.length > 0) {
+      await this._rawText(payload, 1500);
+    }
+
+    // Save: Ctrl-W → s → Enter
+    await this._rawCtrl("w", 800);
+    await this._rawText("s", 500);
+    await this._rawKey("enter", 1800);
+
+    const screen = this.getScreenContent();
+    const success = /順利貼出佈告/.test(screen);
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Save attempted. Success: ${success}\n\n${returnMode === "summary" ? "Summary" : "Screen"}:\n${this.formatScreen(returnMode)}`,
+        } as TextContent,
+      ],
+    };
+  }
+
+  // ===== B 級：full one-shot reply =====
+
+  private async handleReplyTo(articleId: number, content: string, sign: boolean, verify: boolean): Promise<CallToolResult> {
+    // Step 1: jump to article in board list
+    await this._rawText(String(articleId), 500);
+    await this._rawKey("enter", 800);
+
+    // Step 2: start reply wizard from board list
+    await this._rawText("y", 600);
+    await this._rawText("F", 600);
+    await this._rawKey("enter", 800);
+    await this._rawKey("enter", 800);   // category skip
+    await this._rawKey("enter", 800);   // title accept
+    await this._rawText("Y", 600);
+    await this._rawKey("enter", 800);   // quote confirm
+    await this._rawText("0", 600);
+    await this._rawKey("enter", 1200);  // enter editor
+    await this._rawCtrl("t", 600);      // jump to end
+
+    // Step 3: write content + signature
+    let payload = content;
+    if (sign) {
+      if (payload.length > 0 && !payload.endsWith("\n")) payload += "\n";
+      payload += "--\n本文由 AI 發送";
+    }
+    if (payload.length > 0) {
+      await this._rawText(payload, 1500);
+    }
+
+    // Step 4: save
+    await this._rawCtrl("w", 800);
+    await this._rawText("s", 500);
+    await this._rawKey("enter", 1800);
+
+    const screenAfterSave = this.getScreenContent();
+    const success = /順利貼出佈告/.test(screenAfterSave);
+
+    let verifyBlock = "";
+    if (success && verify) {
+      // Press Space to return to board list
+      await this._rawKey("space", 1000);
+      // The newly posted reply is now somewhere on the board.
+      // We don't know the new article id without parsing; return current screen as evidence.
+      const boardScreen = this.getScreenContent();
+      verifyBlock = `\n\n--- Verify (board list after post) ---\n${boardScreen}`;
+    }
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: `bbs_reply_to(${articleId}) → success: ${success}\n\nPost-save screen:\n${screenAfterSave}${verifyBlock}`,
+        } as TextContent,
+      ],
+    };
+  }
+
+  // ===== Stock history (TWSE STOCK_DAY) =====
+
+  private parseTwseRow(row: string[]): { date: string; open: number; high: number; low: number; close: number; volume: number } | null {
+    if (!Array.isArray(row) || row.length < 7) return null;
+    const dateRoc = row[0];
+    const m = dateRoc.match(/^(\d+)\/(\d+)\/(\d+)$/);
+    if (!m) return null;
+    const year = parseInt(m[1], 10) + 1911;
+    const date = `${year}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+    const num = (s: string): number => {
+      if (typeof s !== "string" || s === "--") return NaN;
+      return parseFloat(s.replace(/,/g, ""));
+    };
+    const volume = parseInt((row[1] || "0").replace(/,/g, ""), 10);
+    const open = num(row[3]);
+    const high = num(row[4]);
+    const low = num(row[5]);
+    const close = num(row[6]);
+    if ([open, high, low, close].some(x => !isFinite(x))) return null;
+    return { date, open, high, low, close, volume };
+  }
+
+  private async fetchTwseMonth(stockNo: string, yyyymm: string): Promise<any[][]> {
+    const url = `https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=${yyyymm}01&stockNo=${encodeURIComponent(stockNo)}`;
+    try {
+      const res = await fetch(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+          "Accept": "application/json, text/plain, */*",
+        },
+      });
+      if (!res.ok) return [];
+      const data: any = await res.json();
+      if (data.stat !== "OK" || !Array.isArray(data.data)) return [];
+      return data.data;
+    } catch {
+      return [];
+    }
+  }
+
+  private async _fetchStockHistory(symbol: string, days: number): Promise<{ date: string; open: number; high: number; low: number; close: number; volume: number; source?: string }[]> {
+    const stockNo = symbol.replace(/^(tse|otc)_/i, "").replace(/\.tw$/i, "");
+    if (!/^\d+$/.test(stockNo)) {
+      throw new Error(`Invalid symbol: ${symbol} (expected digits like '2330')`);
+    }
+
+    // Try TWSE first (TSE listed stocks)
+    const twseResult = await this._fetchTwseStockHistory(stockNo, days);
+    if (twseResult.length > 0) {
+      return twseResult.map(r => ({ ...r, source: "twse" }));
+    }
+
+    // Fallback to FinMind for OTC / TPEX stocks
+    const finMindResult = await this._fetchFinMindHistory(stockNo, days);
+    if (finMindResult.length > 0) {
+      return finMindResult.map(r => ({ ...r, source: "finmind" }));
+    }
+
+    throw new Error(`No history data for ${stockNo}. Not found on TWSE STOCK_DAY or FinMind. Check stock code or try again later.`);
+  }
+
+  private async _fetchTwseStockHistory(stockNo: string, days: number): Promise<{ date: string; open: number; high: number; low: number; close: number; volume: number }[]> {
+    const today = new Date();
+    const monthsToFetch = Math.max(2, Math.ceil(days / 18) + 1);
+    const months: string[] = [];
+    for (let i = 0; i < monthsToFetch; i++) {
+      const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
+      const y = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      months.push(`${y}${mm}`);
+    }
+
+    const monthResults = await Promise.all(months.map(yyyymm => this.fetchTwseMonth(stockNo, yyyymm)));
+    const allRows = monthResults.flat();
+
+    if (allRows.length === 0) return [];
+
+    const map = new Map<string, any>();
+    for (const row of allRows) {
+      const parsed = this.parseTwseRow(row);
+      if (parsed) map.set(parsed.date, parsed);
+    }
+
+    return Array.from(map.values())
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .slice(-days);
+  }
+
+  private async _fetchFinMindHistory(stockNo: string, days: number): Promise<{ date: string; open: number; high: number; low: number; close: number; volume: number }[]> {
+    const today = new Date();
+    const start = new Date();
+    // Pad for weekends/holidays: assume ~70% trading day ratio
+    start.setDate(today.getDate() - Math.ceil(days / 0.7) - 7);
+
+    const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const params = new URLSearchParams({
+      dataset: "TaiwanStockPrice",
+      data_id: stockNo,
+      start_date: fmt(start),
+      end_date: fmt(today),
+    });
+    const token = (process.env.FINMIND_TOKEN || "").trim();
+    if (token) params.append("token", token);
+    const url = `https://api.finmindtrade.com/api/v4/data?${params.toString()}`;
+
+    try {
+      const res = await fetch(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+          "Accept": "application/json",
+        },
+      });
+      if (!res.ok) return [];
+      const data: any = await res.json();
+      if (data.status !== 200 || !Array.isArray(data.data)) return [];
+
+      return data.data
+        .map((row: any) => ({
+          date: row.date,
+          open: typeof row.open === "number" ? row.open : parseFloat(row.open),
+          high: typeof row.max === "number" ? row.max : parseFloat(row.max),
+          low: typeof row.min === "number" ? row.min : parseFloat(row.min),
+          close: typeof row.close === "number" ? row.close : parseFloat(row.close),
+          volume: typeof row.Trading_Volume === "number" ? row.Trading_Volume : parseInt(row.Trading_Volume || "0", 10),
+        }))
+        .filter((r: any) => isFinite(r.open) && isFinite(r.close) && r.close > 0)
+        .sort((a: any, b: any) => a.date.localeCompare(b.date))
+        .slice(-days);
+    } catch {
+      return [];
+    }
+  }
+
+  private async handleStockHistory(symbol: string, days: number): Promise<CallToolResult> {
+    const result = await this._fetchStockHistory(symbol, days);
+    const stockNo = symbol.replace(/^(tse|otc)_/i, "").replace(/\.tw$/i, "");
+
+    const lines = [
+      `Stock: ${stockNo} (TWSE)`,
+      `Range: ${result[0]?.date} ~ ${result[result.length - 1]?.date}`,
+      `Records: ${result.length}`,
+      "",
+      "Last 10 days:",
+      ...result.slice(-10).map(r => `  ${r.date}  O:${r.open}  H:${r.high}  L:${r.low}  C:${r.close}  V:${r.volume.toLocaleString()}`),
+      "",
+      "--- JSON ---",
+      JSON.stringify(result),
+    ];
+
+    return { content: [{ type: "text", text: lines.join("\n") } as TextContent] };
+  }
+
+  // ===== Technical indicators =====
+
+  private calcMA(values: number[], n: number): (number | null)[] {
+    const out: (number | null)[] = [];
+    for (let i = 0; i < values.length; i++) {
+      if (i < n - 1) { out.push(null); continue; }
+      let sum = 0;
+      for (let j = i - n + 1; j <= i; j++) sum += values[j];
+      out.push(sum / n);
+    }
+    return out;
+  }
+
+  private calcEMA(values: number[], n: number): (number | null)[] {
+    const k = 2 / (n + 1);
+    const out: (number | null)[] = [];
+    let ema: number | null = null;
+    for (let i = 0; i < values.length; i++) {
+      if (i < n - 1) { out.push(null); continue; }
+      if (ema === null) {
+        let sum = 0;
+        for (let j = 0; j < n; j++) sum += values[j];
+        ema = sum / n;
+      } else {
+        ema = values[i] * k + ema * (1 - k);
+      }
+      out.push(ema);
+    }
+    return out;
+  }
+
+  private calcKD(highs: number[], lows: number[], closes: number[], period = 9): { k: (number | null)[]; d: (number | null)[] } {
+    const ks: (number | null)[] = [];
+    const ds: (number | null)[] = [];
+    let prevK = 50, prevD = 50;
+    for (let i = 0; i < closes.length; i++) {
+      if (i < period - 1) { ks.push(null); ds.push(null); continue; }
+      let hMax = -Infinity, lMin = Infinity;
+      for (let j = i - period + 1; j <= i; j++) {
+        if (highs[j] > hMax) hMax = highs[j];
+        if (lows[j] < lMin) lMin = lows[j];
+      }
+      const rsv = hMax === lMin ? 50 : ((closes[i] - lMin) / (hMax - lMin)) * 100;
+      const k = (2 / 3) * prevK + (1 / 3) * rsv;
+      const d = (2 / 3) * prevD + (1 / 3) * k;
+      ks.push(k); ds.push(d);
+      prevK = k; prevD = d;
+    }
+    return { k: ks, d: ds };
+  }
+
+  private calcMACD(closes: number[]): { macd: (number | null)[]; signal: (number | null)[]; hist: (number | null)[] } {
+    const ema12 = this.calcEMA(closes, 12);
+    const ema26 = this.calcEMA(closes, 26);
+    const macd = ema12.map((v, i) => (v !== null && ema26[i] !== null) ? (v as number) - (ema26[i] as number) : null);
+    const macdNonNull: number[] = [];
+    const idxMap: number[] = [];
+    for (let i = 0; i < macd.length; i++) {
+      if (macd[i] !== null) { macdNonNull.push(macd[i] as number); idxMap.push(i); }
+    }
+    const sig9 = this.calcEMA(macdNonNull, 9);
+    const signal: (number | null)[] = closes.map(() => null);
+    for (let j = 0; j < sig9.length; j++) {
+      if (sig9[j] !== null) signal[idxMap[j]] = sig9[j];
+    }
+    const hist = macd.map((v, i) => (v !== null && signal[i] !== null) ? (v as number) - (signal[i] as number) : null);
+    return { macd, signal, hist };
+  }
+
+  private calcRSI(closes: number[], period = 14): (number | null)[] {
+    const out: (number | null)[] = [];
+    if (closes.length < period + 1) return closes.map(() => null);
+    let avgGain = 0, avgLoss = 0;
+    for (let i = 1; i <= period; i++) {
+      const diff = closes[i] - closes[i - 1];
+      if (diff > 0) avgGain += diff; else avgLoss -= diff;
+    }
+    avgGain /= period; avgLoss /= period;
+    for (let i = 0; i < period; i++) out.push(null);
+    out.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss));
+    for (let i = period + 1; i < closes.length; i++) {
+      const diff = closes[i] - closes[i - 1];
+      const gain = diff > 0 ? diff : 0;
+      const loss = diff < 0 ? -diff : 0;
+      avgGain = (avgGain * (period - 1) + gain) / period;
+      avgLoss = (avgLoss * (period - 1) + loss) / period;
+      out.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss));
+    }
+    return out;
+  }
+
+  private calcBoll(closes: number[], n = 20, mult = 2): { mid: (number | null)[]; up: (number | null)[]; lo: (number | null)[] } {
+    const mid = this.calcMA(closes, n);
+    const up: (number | null)[] = [];
+    const lo: (number | null)[] = [];
+    for (let i = 0; i < closes.length; i++) {
+      if (mid[i] === null) { up.push(null); lo.push(null); continue; }
+      let sum = 0;
+      for (let j = i - n + 1; j <= i; j++) sum += (closes[j] - (mid[i] as number)) ** 2;
+      const std = Math.sqrt(sum / n);
+      up.push((mid[i] as number) + mult * std);
+      lo.push((mid[i] as number) - mult * std);
+    }
+    return { mid, up, lo };
+  }
+
+  private fmtNum(v: number | null, digits = 2): string {
+    return v === null || !isFinite(v) ? "—" : v.toFixed(digits);
+  }
+
+  private last(arr: (number | null)[]): number | null {
+    for (let i = arr.length - 1; i >= 0; i--) {
+      if (arr[i] !== null && isFinite(arr[i] as number)) return arr[i];
+    }
+    return null;
+  }
+
+  private lastN(arr: (number | null)[], n: number): (number | null)[] {
+    return arr.slice(-n);
+  }
+
+  private async handleStockIndicators(symbol: string, indicators: string[], days: number): Promise<CallToolResult> {
+    const history = await this._fetchStockHistory(symbol, days);
+    if (history.length < 30) {
+      throw new Error(`History too short (${history.length} days). Increase 'days' parameter to ≥60.`);
+    }
+    const closes = history.map(r => r.close);
+    const highs = history.map(r => r.high);
+    const lows = history.map(r => r.low);
+    const dates = history.map(r => r.date);
+
+    const requested = indicators.map(s => s.toLowerCase());
+    const result: any = {
+      symbol: symbol.replace(/^(tse|otc)_/i, "").replace(/\.tw$/i, ""),
+      latest_date: dates[dates.length - 1],
+      latest_close: closes[closes.length - 1],
+      records_used: history.length,
+      indicators: {},
+    };
+
+    const maPeriods = [
+      { key: "ma5", n: 5 },
+      { key: "ma10", n: 10 },
+      { key: "ma20", n: 20 },
+      { key: "ma60", n: 60 },
+      { key: "ma120", n: 120 },
+      { key: "ma240", n: 240 },
+    ];
+    for (const { key, n } of maPeriods) {
+      if (requested.includes(key)) {
+        const series = this.calcMA(closes, n);
+        result.indicators[key] = { current: this.last(series), recent_5: this.lastN(series, 5) };
+      }
+    }
+
+    if (requested.includes("ema12")) {
+      const s = this.calcEMA(closes, 12);
+      result.indicators.ema12 = { current: this.last(s), recent_5: this.lastN(s, 5) };
+    }
+    if (requested.includes("ema26")) {
+      const s = this.calcEMA(closes, 26);
+      result.indicators.ema26 = { current: this.last(s), recent_5: this.lastN(s, 5) };
+    }
+    if (requested.includes("kd")) {
+      const { k, d } = this.calcKD(highs, lows, closes, 9);
+      result.indicators.kd = {
+        current_k: this.last(k),
+        current_d: this.last(d),
+        recent_5_k: this.lastN(k, 5),
+        recent_5_d: this.lastN(d, 5),
+      };
+    }
+    if (requested.includes("macd")) {
+      const { macd, signal, hist } = this.calcMACD(closes);
+      result.indicators.macd = {
+        current_macd: this.last(macd),
+        current_signal: this.last(signal),
+        current_hist: this.last(hist),
+        recent_5_hist: this.lastN(hist, 5),
+      };
+    }
+    if (requested.includes("rsi")) {
+      const s = this.calcRSI(closes, 14);
+      result.indicators.rsi = { current: this.last(s), recent_5: this.lastN(s, 5) };
+    }
+    if (requested.includes("boll")) {
+      const { mid, up, lo } = this.calcBoll(closes, 20, 2);
+      result.indicators.boll = {
+        mid: this.last(mid),
+        upper: this.last(up),
+        lower: this.last(lo),
+      };
+    }
+
+    // Human-readable summary
+    const lines: string[] = [
+      `Stock: ${result.symbol}  最近收盤: ${result.latest_close}  (${result.latest_date})`,
+      `Records: ${result.records_used} 天`,
+      "",
+    ];
+    for (const [name, val] of Object.entries(result.indicators)) {
+      const v: any = val;
+      if (name === "kd") {
+        lines.push(`KD: K=${this.fmtNum(v.current_k, 1)}  D=${this.fmtNum(v.current_d, 1)}`);
+      } else if (name === "macd") {
+        lines.push(`MACD: ${this.fmtNum(v.current_macd, 3)}  Signal: ${this.fmtNum(v.current_signal, 3)}  Hist: ${this.fmtNum(v.current_hist, 3)}`);
+      } else if (name === "boll") {
+        lines.push(`Bollinger: 上 ${this.fmtNum(v.upper)} / 中 ${this.fmtNum(v.mid)} / 下 ${this.fmtNum(v.lower)}`);
+      } else {
+        lines.push(`${name.toUpperCase()}: ${this.fmtNum(v.current)}`);
+      }
+    }
+    lines.push("", "--- JSON ---", JSON.stringify(result));
+
+    return { content: [{ type: "text", text: lines.join("\n") } as TextContent] };
   }
 
   async run() {
